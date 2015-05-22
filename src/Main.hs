@@ -5,7 +5,7 @@ module Main where
 import Control.Applicative
 import Data.Attoparsec.Text
 import Data.Text
-import Text.PrettyPrint.HughesPJClass
+import Text.PrettyPrint.ANSI.Leijen
 import Language.Gamma
 
 main :: IO ()
@@ -22,9 +22,9 @@ run src = do
   
     where doStmt stmt = do
             putStrLn "Statement:"
-            putStrLn (prettyShow stmt)
+            print (pretty stmt)
             
             putStrLn ("AST: " ++ show stmt)
             case (runTyp builtinBindings (typecheck stmt)) of
               Left tyErr -> putStrLn ("Type Error: " ++ show tyErr)
-              Right ty -> putStrLn ("Type: " ++ prettyShow ty) >> print ty
+              Right ty -> putStr "Type: " >> print (pretty ty) >> print ty

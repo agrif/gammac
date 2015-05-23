@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, TupleSections #-}
 
 module Language.Gamma.Typecheck where
 
@@ -18,6 +18,7 @@ import Language.Gamma.Builtins
 data TypState ann = TypState
     { nextTypeVar :: Int
     , bindings :: Map GammaSym (GammaType ann)
+    , substitutions :: Map Int (GammaType ann)
     , constraints :: [(ann, GammaSym, [GammaType ann])]
     } deriving (Show)
 
@@ -26,6 +27,7 @@ data TypError a = UnboundSymbol a GammaSym
                 | ArgumentCount (GammaType a) (GammaType a)
                 | CannotUnify (GammaType a) (GammaType a)
                 | DoesNotReturn a GammaSym
+                | BrokenCompiler
                   deriving (Show)
 
 type TypT ann m a = StateT (TypState ann) (ExceptT (TypError ann) m) a
@@ -39,17 +41,18 @@ runTypT table m = runExceptT (fst <$> runStateT m state)
     where state = TypState
                   { nextTypeVar = 0
                   , bindings = table
+                  , substitutions = mempty
                   , constraints = []
                   }
 
 runTyp :: Map GammaSym (GammaType ann) -> Typ ann a -> Either (TypError ann) a
 runTyp table = runIdentity . runTypT table
 
+createVar' :: (Monad m) => TypT ann m Int
+createVar' = gets nextTypeVar <* modify (\s -> s { nextTypeVar = nextTypeVar s + 1 })
+
 createVar :: (Monad m) => a -> TypT ann m (GammaType a)
-createVar a = do
-  n <- gets nextTypeVar
-  modify (\s -> s { nextTypeVar = n + 1 })
-  return (VarType a n)
+createVar a = VarType a <$> createVar'
 
 scoped :: (Monad m) => TypT ann m a -> TypT ann m a
 scoped m = do
@@ -86,27 +89,33 @@ instance GammaTypes (GammaType a) a where
     freeTypeVars (BoundType a _ args ty) = foldl Set.union (freeTypeVars ty) (fmap freeTypeVars args)
     freeTypeVars _ = mempty
 
-instance GammaTypes (Map GammaSym (GammaType a)) a where
+instance GammaTypes (Map k (GammaType a)) a where
     mapType n ty table = fmap (mapType n ty) table
     freeTypeVars table = foldl Set.union mempty (fmap freeTypeVars table)
+
+instance GammaTypes [(a, GammaSym, [GammaType a])] a where
+    mapType n ty cs = [(a, name, [mapType n ty t | t <- tys]) | (a, name, tys) <- cs]
+    freeTypeVars cs = foldl Set.union mempty [freeTypeVars t | (_, _, tys) <- cs, t <- tys]
 
 instance GammaTypes (TypState a) a where
     mapType n ty state = state
                          { bindings = mapType n ty (bindings state)
-                         , constraints = [(a, name, [mapType n ty t | t <- tys]) | (a, name, tys) <- constraints state]
+                         , substitutions = mapType n ty (substitutions state)
+                         , constraints = mapType n ty (constraints state)
                          }
-    freeTypeVars state = foldl Set.union (freeTypeVars (bindings state)) [freeTypeVars t | (_, _, tys) <- constraints state, t <- tys]
+    freeTypeVars state = freeTypeVars (bindings state) `Set.union` freeTypeVars (substitutions state) `Set.union` freeTypeVars (constraints state)
 
 elimTyp :: (Monad m) => Int -> GammaType a -> TypT a m (GammaType a)
 elimTyp n ty = do
   modify (mapType n ty)
+  modify (\s -> s { substitutions = Map.insert n ty (substitutions s) })
   return ty
 
 constrainTyp :: (Monad m) => a -> GammaSym -> [GammaType a] -> TypT a m ()
 constrainTyp a name tys = modify (\s -> s { constraints = (a, name, tys) : constraints s })
 
-class GammaTypeable t a where
-    typecheck :: (Monad m) => t a -> TypT a m (GammaType a)
+class (Traversable (t a)) => GammaTypeable t a where
+    typecheck :: (Monad m) => t a (a, Int) -> TypT a m (GammaType a)
 
 unify :: (Monad m) => GammaType a -> GammaType a -> TypT a m (GammaType a)
 unify ty@(VarType a n) (VarType b m)
@@ -161,11 +170,11 @@ generalize m = do
           constrain ty (a, name, args) = BoundType a name args ty
 
 instance GammaTypeable GammaDecl a where
-    typecheck (VarDecl a bind expr) =
+    typecheck (VarDecl (a, i) bind expr) =
         do ety <- generalize $ typecheck expr
            bty <- typecheck bind
-           unify bty ety
-    typecheck (FunDecl a name binds ret stmts) =
+           elimTyp i =<< unify bty ety
+    typecheck (FunDecl (a, i) name binds ret stmts) =
         do fty <- generalize $ scoped $ do
                     args <- mapM typecheck binds
                     rty <- maybe (createVar a) return ret
@@ -177,26 +186,36 @@ instance GammaTypeable GammaDecl a where
                           _ -> return ty
                     lookupSym a name
            
-           bindSym name fty
+           elimTyp i =<< bindSym name fty
 
 instance GammaTypeable GammaBind a where
-    typecheck (PlainBind a sym) = createVar a >>= bindSym sym
-    typecheck (TypeBind a sym ty) = bindSym sym ty
+    typecheck (PlainBind (a, i) sym) = createVar a >>= bindSym sym >>= elimTyp i
+    typecheck (TypeBind (a, i) sym ty) = bindSym sym ty >>= elimTyp i
 
 instance GammaTypeable GammaStmt a where
-    typecheck (DeclStmt a decl) = typecheck decl
-    typecheck (ExprStmt a expr) = typecheck expr
-    typecheck (RetStmt a expr) = typecheck expr
+    typecheck (DeclStmt (a, i) decl) = typecheck decl >>= elimTyp i
+    typecheck (ExprStmt (a, i) expr) = typecheck expr >>= elimTyp i
+    typecheck (RetStmt (a, i) expr) = typecheck expr >>= elimTyp i
 
 instance GammaTypeable GammaExpr a where
-    typecheck (LitExpr a (IntLit _)) = return (PrimType a CInt)
-    typecheck (SymExpr a sym) = lookupSym a sym
-    typecheck (TypeExpr a expr ty) =
+    typecheck (LitExpr (a, i) (IntLit _)) = elimTyp i (PrimType a CInt)
+    typecheck (SymExpr (a, i) sym) = lookupSym a sym >>= elimTyp i
+    typecheck (TypeExpr (a, i) expr ty) =
         do ity <- typecheck expr
-           unify ity ty
-    typecheck (ApplyExpr a fun args) =
+           elimTyp i =<< unify ity ty
+    typecheck (ApplyExpr (a, i) fun args) =
         do ret <- createVar a
            fty <- typecheck fun
            argty <- mapM typecheck args
            FunType _ rty _ <- unify fty (FunType a ret argty)
-           return rty
+           elimTyp i rty
+
+inferTypes :: (Monad m, GammaTypeable t a) => t a a -> TypT a m (t a (a, GammaType a))
+inferTypes code = do
+    annotated <- (traverse (\a -> (a,) <$> createVar') code)
+    typecheck annotated
+    subst <- gets substitutions
+    let final = traverse (\(a, i) -> (a,) <$> Map.lookup i subst) annotated
+    case final of
+      Just f -> return f
+      Nothing -> throwError BrokenCompiler

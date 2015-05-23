@@ -25,6 +25,6 @@ run src = do
             print (pretty stmt)
             
             putStrLn ("AST: " ++ show stmt)
-            case (runTyp builtinBindings (typecheck stmt)) of
+            case (runTyp builtinBindings (inferTypes stmt)) of
               Left tyErr -> putStrLn ("Type Error: " ++ show tyErr)
-              Right ty -> putStr "Type: " >> print (pretty ty) >> print ty
+              Right ty -> putStr "Typed: " >> print ty

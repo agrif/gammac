@@ -1,21 +1,21 @@
-{-# LANGUAGE DeriveFunctor, FlexibleInstances #-}
+{-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable, FlexibleInstances #-}
 
 module Language.Gamma.Types where
 
 type GammaSym = String
 
-data GammaDecl a = VarDecl a (GammaBind a) (GammaExpr a)
-                 | FunDecl a GammaSym [GammaBind a] (Maybe (GammaType a)) [GammaStmt a]
-                   deriving (Show, Functor)
+data GammaDecl t a = VarDecl a (GammaBind t a) (GammaExpr t a)
+                   | FunDecl a GammaSym [GammaBind t a] (Maybe (GammaType t)) [GammaStmt t a]
+                     deriving (Show, Functor, Foldable, Traversable)
 
-data GammaBind a = PlainBind a GammaSym
-                 | TypeBind a GammaSym (GammaType a)
-                   deriving (Show, Functor)
+data GammaBind t a = PlainBind a GammaSym
+                   | TypeBind a GammaSym (GammaType t)
+                     deriving (Show, Functor, Foldable, Traversable)
 
-data GammaStmt a = DeclStmt a (GammaDecl a)
-                 | ExprStmt a (GammaExpr a)
-                 | RetStmt a (GammaExpr a)
-                   deriving (Show, Functor)
+data GammaStmt t a = DeclStmt a (GammaDecl t a)
+                   | ExprStmt a (GammaExpr t a)
+                   | RetStmt a (GammaExpr t a)
+                     deriving (Show, Functor, Foldable, Traversable)
 
 data GammaType a = PrimType a GammaPrimType
                  | FunType a (GammaType a) [GammaType a]
@@ -36,11 +36,11 @@ instance (Show a) => Show (GammaType () -> GammaType a) where
 data GammaPrimType = CInt
                      deriving (Show, Eq)
 
-data GammaExpr a = LitExpr a GammaLit
-                 | SymExpr a GammaSym
-                 | TypeExpr a (GammaExpr a) (GammaType a)
-                 | ApplyExpr a (GammaExpr a) [GammaExpr a]
-                   deriving (Show, Functor)
+data GammaExpr t a = LitExpr a GammaLit
+                   | SymExpr a GammaSym
+                   | TypeExpr a (GammaExpr t a) (GammaType t)
+                   | ApplyExpr a (GammaExpr t a) [GammaExpr t a]
+                     deriving (Show, Functor, Foldable, Traversable)
 
 data GammaLit = IntLit Integer
                 deriving (Show)

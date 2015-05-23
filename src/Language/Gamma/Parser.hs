@@ -23,7 +23,7 @@ ops = emptyOps & styleReserved .~ HashSet.fromList ["=", ":"]
 
 pSym = ident ids
 
-pDecl :: GammaParser (GammaDecl ())
+pDecl :: GammaParser (GammaDecl () ())
 pDecl =  try (VarDecl () <$> (reserve ids "let" *> pBind) <*> (reserve ops "=" *> pExpr <* symbol ";"))
      <|> FunDecl () <$> (reserve ids "let" *> pSym) <*> parens (commaSep pBind) <*> option Nothing (Just <$> (reserve ops ":" *> pType)) <*> braces (many pStmt)
 

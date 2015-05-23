@@ -13,11 +13,8 @@ builtinName b = "__builtin_" ++ builtinNameSimple b
 funType :: GammaPrimType -> [GammaPrimType] -> GammaType ()
 funType ret args = FunType () (PrimType () ret) (fmap (PrimType ()) args)
 
-univ :: (GammaType () -> GammaType ()) -> GammaType ()
-univ = UnivType ()
-
 builtins :: [GammaBuiltin]
 builtins =
     [ Builtin "cint_plus" (funType CInt [CInt, CInt])
-    , Builtin "zero" (univ (\t -> BoundType () "Zero" [t] t))
+    , Builtin "zero" (UnivType () (ConstrainedType () "Zero" [BoundType () 0] (BoundType () 0)))
     ]

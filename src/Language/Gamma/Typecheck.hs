@@ -51,7 +51,7 @@ createVar' :: (Monad m) => TypT ann m Int
 createVar' = use nextTypeVar <* (nextTypeVar += 1)
 
 createVar :: (Monad m) => a -> TypT ann m (GammaType a)
-createVar a = VarType a <$> createVar'
+createVar a = FreeType a <$> createVar'
 
 scoped :: (Monad m) => TypT ann m a -> TypT ann m a
 scoped m = do
@@ -76,16 +76,16 @@ class GammaTypes t a | t -> a where
 
 instance GammaTypes (GammaType a) a where
     mapType n ty (FunType a fun args) = FunType a (mapType n ty fun) (fmap (mapType n ty) args)
-    mapType n ty orig@(VarType a m) | n == m    = ty
+    mapType n ty orig@(FreeType a m) | n == m    = ty
                                     | otherwise = orig
-    mapType n ty (UnivType a f) = UnivType a (fmap (mapType n ty) f)
-    mapType n ty (BoundType a name args t) = BoundType a name (fmap (mapType n ty) args) (mapType n ty t)
+    mapType n ty (UnivType a t) = UnivType a (mapType n ty t)
+    mapType n ty (ConstrainedType a name args t) = ConstrainedType a name (fmap (mapType n ty) args) (mapType n ty t)
     mapType _ _ ty = ty
     
     freeTypeVars (FunType a fun args) = foldl Set.union (freeTypeVars fun) (fmap freeTypeVars args)
-    freeTypeVars (VarType a n) = Set.singleton n
-    freeTypeVars (UnivType a f) = freeTypeVars (f (DummyType ""))
-    freeTypeVars (BoundType a _ args ty) = foldl Set.union (freeTypeVars ty) (fmap freeTypeVars args)
+    freeTypeVars (FreeType a n) = Set.singleton n
+    freeTypeVars (UnivType a t) = freeTypeVars t
+    freeTypeVars (ConstrainedType a _ args ty) = foldl Set.union (freeTypeVars ty) (fmap freeTypeVars args)
     freeTypeVars _ = mempty
 
 instance GammaTypes (Map k (GammaType a)) a where
@@ -101,7 +101,7 @@ instance GammaTypes (TypState a) a where
                            bindings %= mapType n ty
                            substitutions %= mapType n ty
                            constraints %= mapType n ty
-    freeTypeVars state = freeTypeVars (view bindings state) `Set.union` freeTypeVars (view substitutions state) `Set.union` freeTypeVars (view constraints state)
+    freeTypeVars state = freeTypeVars (view bindings state)
 
 elimTyp :: (Monad m) => Int -> GammaType a -> TypT a m (GammaType a)
 elimTyp n ty = do
@@ -115,22 +115,37 @@ constrainTyp a name tys = constraints %= ((a, name, tys) :)
 class (Traversable (t a)) => GammaTypeable t a where
     typecheck :: (Monad m) => t a (a, Int) -> TypT a m (GammaType a)
 
+instantiate :: GammaType a -> GammaType a -> GammaType a
+instantiate templ v = go 0 templ
+    where go n (FunType a x ys) = FunType a (go n x) (fmap (go n) ys)
+          go n (UnivType a x) = UnivType a (go (n + 1) x)
+          go n t@(BoundType a m) | n == m    = v
+                                 | otherwise = t
+
+abstract :: GammaType a -> Int -> GammaType a
+abstract templ n | Set.member n (freeTypeVars templ) = UnivType (templ ^. annotation) (go 0 templ)
+                 | otherwise = templ
+   where go i (FunType a x ys) = FunType a (go i x) (fmap (go i) ys)
+         go i (UnivType a x) = UnivType a (go (i + 1) x)
+         go i t@(FreeType a m) | n == m    = BoundType a i
+                               | otherwise = t
+
 unify :: (Monad m) => GammaType a -> GammaType a -> TypT a m (GammaType a)
-unify ty@(VarType a n) (VarType b m)
+unify ty@(FreeType a n) (FreeType b m)
     | n == m    = return ty
     | otherwise = elimTyp m ty
-unify ty1@(VarType a n) ty2
+unify ty1@(FreeType a n) ty2
     | Set.member n (freeTypeVars ty2) = throwError (InfiniteType ty1 ty2)
     | otherwise = elimTyp n ty2
-unify ty1 ty2@(VarType a n) = unify ty2 ty1
+unify ty1 ty2@(FreeType a n) = unify ty2 ty1
 
-unify ty1@(UnivType a f) ty2 = createVar () >>= unify ty2 . f
-unify ty1 ty2@(UnivType a f) = unify ty2 ty1
+unify ty1@(UnivType a t) ty2 = createVar a >>= unify ty2 . instantiate t
+unify ty1 ty2@(UnivType a t) = unify ty2 ty1
 
-unify ty1@(BoundType a name args t) ty2 = do
+unify ty1@(ConstrainedType a name args t) ty2 = do
   constrainTyp a name args
   unify t ty2
-unify ty1 ty2@(BoundType a name args t) = unify ty2 ty1
+unify ty1 ty2@(ConstrainedType a name args t) = unify ty2 ty1
 
 unify ty1@(FunType a f1 a1) ty2@(FunType b f2 a2)
     | length a1 /= length a2 = throwError (ArgumentCount ty1 ty2)
@@ -153,19 +168,10 @@ generalize m = do
   let abs = Set.difference (freeTypeVars ty) env
   
   constraints .= oldc
+  itraverse (\i n -> elimTyp n (BoundType (ty ^. annotation) i)) (Set.toList abs)
   return (foldl abstract (foldl constrain ty cs) abs)
 
-    where abstract t n
-              | Set.member n (freeTypeVars t) = UnivType (t ^. annotation) (\v -> replace n v t)
-              | otherwise = t
-          
-          replace n v (FunType a fun args) = FunType a (replace n v fun) (fmap (replace n v) args)
-          replace n v t@(VarType a m) | n == m    = a <$ v
-                                      | otherwise = t
-          replace n v (UnivType a f) = UnivType a (fmap (replace n v) f)
-          replace _ _ t = t
-          
-          constrain ty (a, name, args) = BoundType a name args ty
+    where constrain ty (a, name, args) = ConstrainedType a name args ty
 
 instance GammaTypeable GammaDecl a where
     typecheck (VarDecl (a, i) bind expr) =

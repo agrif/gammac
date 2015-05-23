@@ -37,21 +37,19 @@ instance GammaAnnotated (GammaStmt t) where
 
 data GammaType a = PrimType a GammaPrimType
                  | FunType a (GammaType a) [GammaType a]
-                 | VarType a Int
-                 | UnivType a (GammaType () -> GammaType a)
-                 | BoundType a GammaSym [GammaType a] (GammaType a)
-                 | DummyType String -- FIXME only here for show
+                 | FreeType a Int
+                 | UnivType a (GammaType a) -- de bruijen indexing
+                 | BoundType a Int
+                 | ConstrainedType a GammaSym [GammaType a] (GammaType a)
                    deriving (Show, Functor)
 
 instance GammaAnnotated GammaType where
     annotation f (PrimType a x) = f a <&> \b -> PrimType b x
     annotation f (FunType a x y) = f a <&> \b -> FunType b x y
-    annotation f (VarType a x) = f a <&> \b -> VarType b x
+    annotation f (FreeType a x) = f a <&> \b -> FreeType b x
     annotation f (UnivType a x) = f a <&> \b -> UnivType b x
-    annotation f (BoundType a x y z) = f a <&> \b -> BoundType b x y z
-
-instance (Show a) => Show (GammaType () -> GammaType a) where
-    show f = show (f (DummyType "?"))
+    annotation f (BoundType a x) = f a <&> \b -> BoundType b x
+    annotation f (ConstrainedType a x y z) = f a <&> \b -> ConstrainedType b x y z
 
 data GammaPrimType = CInt
                      deriving (Show, Eq)

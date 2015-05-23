@@ -34,7 +34,6 @@ pStmt =  DeclStmt () <$> pDecl
      <|> ExprStmt () <$> (pExpr <* symbol ";")
      <|> RetStmt () <$> (reserve ids "return" *> pExpr <* symbol ";")
 
--- FIXME VarType, UnivType
 pType = PrimType () <$> pPrimType
 pPrimType = CInt <$ reserve ids "cint"
 

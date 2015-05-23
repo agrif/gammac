@@ -1,61 +1,48 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoMonomorphismRestriction #-}
 
 module Language.Gamma.Parser where
 
-import Prelude hiding (takeWhile)
-
 import Control.Applicative
-import Control.Monad
-import Data.Attoparsec.Text
-import Data.Text hiding (takeWhile)
+import Control.Lens
+import Data.Proxy
+import qualified Data.HashSet as HashSet
+import Text.Trifecta
+import Text.Parser.Token.Style
 
 import Language.Gamma.Types
+import Language.Gamma.Parser.Commented
 
-pSym = unpack <$> identifier
+data GammaStyle
+type GammaParser a = Commented GammaStyle Parser a
 
-pDecl =  VarDecl () <$> (reserved "let" *> pBind) <*> (token "=" *> pExpr <* token ";")
-     <|> FunDecl () <$> (reserved "let" *> pSym) <*> parens (commaSep pBind) <*> option Nothing (Just <$> (token ":" *> pType)) <*> braces (many pStmt)
+instance CommentedStyle (GammaStyle) where
+    commentedStyle _ = javaCommentStyle & commentNesting .~ True
 
-pBind =  TypeBind () <$> pSym <* token ":" <*> pType
+ids = emptyIdents & styleReserved .~ HashSet.fromList ["let", "return", "cint"]
+ops = emptyOps & styleReserved .~ HashSet.fromList ["=", ":"]
+
+pSym = ident ids
+
+pDecl :: GammaParser (GammaDecl ())
+pDecl =  try (VarDecl () <$> (reserve ids "let" *> pBind) <*> (reserve ops "=" *> pExpr <* symbol ";"))
+     <|> FunDecl () <$> (reserve ids "let" *> pSym) <*> parens (commaSep pBind) <*> option Nothing (Just <$> (reserve ops ":" *> pType)) <*> braces (many pStmt)
+
+pBind =  TypeBind () <$> try (pSym <* reserve ops ":") <*> pType
      <|> PlainBind () <$> pSym
 
 pStmt =  DeclStmt () <$> pDecl
-     <|> ExprStmt () <$> (pExpr <* token ";")
-     <|> RetStmt () <$> (reserved "return" *> pExpr <* token ";")
+     <|> ExprStmt () <$> (pExpr <* symbol ";")
+     <|> RetStmt () <$> (reserve ids "return" *> pExpr <* symbol ";")
 
 -- FIXME VarType, UnivType
 pType = PrimType () <$> pPrimType
+pPrimType = CInt <$ reserve ids "cint"
 
-pPrimType = CInt <$ reserved "cint"
-
--- FIXME TypeExpr
-pExpr =  ApplyExpr () <$> pExprAtom <*> parens (commaSep pExpr)
-     <|> ApplyExpr () <$> parens pExpr <*> parens (commaSep pExpr)
+pExpr =  try (ApplyExpr () <$> pExprAtom <*> parens (commaSep pExpr))
+     <|> try (ApplyExpr () <$> parens pExpr <*> parens (commaSep pExpr))
      <|> pExprAtom
 
 pExprAtom =  LitExpr () <$> pLit
          <|> SymExpr () <$> pSym
 
-pLit = IntLit <$> signed ("0x" *> hexadecimal <|> decimal)
-
-identifier = lexeme (fst <$> match (first <* rest) <?> "identifier")
-    where first = satisfy (inClass "a-zA-Z_")
-          rest = takeWhile (inClass "a-zA-Z_0-9")
-reserved name = (identifier >>= \s -> guard (s == pack name) >> return s) <?> name
-
-commaSep x = x `sepBy` token ","
-braces x = token "{" *> x <* token "}"
-parens x = token "(" *> x <* token ")"
-token x = lexeme (string x) <?> unpack x
-lexeme x = x <* whitespace
-whitespace = many (  void (takeWhile1 isHorizontalSpace)
-                 <|> void singleLineComment
-                 <|> void multiLineComment
-                 <|> endOfLine
-                  ) <?> "whitespace"
-    where singleLineComment = "//" *> takeTill isEndOfLine <* endOfLine
-          multiLineComment = "/*" *> many inside *> "*/"
-          
-          inside =  takeWhile1 (notInClass "/*")
-                <|> multiLineComment
-                <|> ("*" <* notChar '/')
+pLit = IntLit <$> integer'

@@ -2,8 +2,6 @@
 
 module Language.Gamma.Typecheck where
 
-import Debug.Trace
-
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.State

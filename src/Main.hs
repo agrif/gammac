@@ -3,10 +3,10 @@
 module Main where
 
 import Control.Applicative
-import Data.Attoparsec.Text
-import Data.Text
 import Text.PrettyPrint.ANSI.Leijen
+import Text.Trifecta
 import Language.Gamma
+import Language.Gamma.Parser.Commented
 
 main :: IO ()
 main = do
@@ -16,9 +16,9 @@ main = do
 
 run :: String -> IO ()
 run src = do
-  case parseOnly (many pDecl <* endOfInput) (pack src) of
-    (Left err) -> print err
-    (Right stmts) -> mapM_ doStmt stmts
+  case parseString (runCommented $ some pDecl <* eof) mempty src of
+    (Failure err) -> print err
+    (Success stmts) -> mapM_ doStmt stmts
   
     where doStmt stmt = do
             putStrLn "Statement:"

@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, TupleSections #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, TupleSections, TemplateHaskell #-}
 
 module Language.Gamma.Typecheck where
 
@@ -7,6 +7,8 @@ import Control.Monad.Identity
 import Control.Monad.State
 import Control.Monad.Except
 import Control.Monad.Writer
+import Control.Lens
+import Control.Lens.TH
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -15,12 +17,14 @@ import qualified Data.Set as Set
 import Language.Gamma.Types
 import Language.Gamma.Builtins
 
-data TypState ann = TypState
-    { nextTypeVar :: Int
-    , bindings :: Map GammaSym (GammaType ann)
-    , substitutions :: Map Int (GammaType ann)
-    , constraints :: [(ann, GammaSym, [GammaType ann])]
-    } deriving (Show)
+declareLenses [d|
+  data TypState ann = TypState
+      { nextTypeVar :: Int
+      , bindings :: Map GammaSym (GammaType ann)
+      , substitutions :: Map Int (GammaType ann)
+      , constraints :: [(ann, GammaSym, [GammaType ann])]
+      } deriving (Show)
+  |]
 
 data TypError a = UnboundSymbol a GammaSym
                 | InfiniteType (GammaType a) (GammaType a)
@@ -38,38 +42,33 @@ builtinBindings = Map.fromList [(builtinName b, builtinType b) | b <- builtins]
 
 runTypT :: (Functor m) => Map GammaSym (GammaType ann) -> TypT ann m a -> m (Either (TypError ann) a)
 runTypT table m = runExceptT (fst <$> runStateT m state)
-    where state = TypState
-                  { nextTypeVar = 0
-                  , bindings = table
-                  , substitutions = mempty
-                  , constraints = []
-                  }
+    where state = TypState 0 table mempty []
 
 runTyp :: Map GammaSym (GammaType ann) -> Typ ann a -> Either (TypError ann) a
 runTyp table = runIdentity . runTypT table
 
 createVar' :: (Monad m) => TypT ann m Int
-createVar' = gets nextTypeVar <* modify (\s -> s { nextTypeVar = nextTypeVar s + 1 })
+createVar' = use nextTypeVar <* (nextTypeVar += 1)
 
 createVar :: (Monad m) => a -> TypT ann m (GammaType a)
 createVar a = VarType a <$> createVar'
 
 scoped :: (Monad m) => TypT ann m a -> TypT ann m a
 scoped m = do
-  binds <- gets bindings
+  binds <- use bindings
   r <- m
-  modify (\s -> s { bindings = binds })
+  bindings .= binds
   return r
 
 lookupSym :: (Monad m) => a -> GammaSym -> TypT a m (GammaType a)
 lookupSym a name = do
-  entry <- gets (Map.lookup name . bindings)
+  entry <- uses bindings (Map.lookup name)
   case entry of
     Just ty -> return ty
     Nothing -> throwError (UnboundSymbol a name)
 
 bindSym :: (Monad m) => GammaSym -> GammaType a -> TypT a m (GammaType a)
-bindSym name ty = ty <$ modify (\s -> s { bindings = Map.insert name ty (bindings s) })
+bindSym name ty = ty <$ (bindings %= Map.insert name ty)
 
 class GammaTypes t a | t -> a where
     mapType :: Int -> GammaType a -> t -> t
@@ -98,21 +97,20 @@ instance GammaTypes [(a, GammaSym, [GammaType a])] a where
     freeTypeVars cs = foldl Set.union mempty [freeTypeVars t | (_, _, tys) <- cs, t <- tys]
 
 instance GammaTypes (TypState a) a where
-    mapType n ty state = state
-                         { bindings = mapType n ty (bindings state)
-                         , substitutions = mapType n ty (substitutions state)
-                         , constraints = mapType n ty (constraints state)
-                         }
-    freeTypeVars state = freeTypeVars (bindings state) `Set.union` freeTypeVars (substitutions state) `Set.union` freeTypeVars (constraints state)
+    mapType n ty state = state &~ do
+                           bindings %= mapType n ty
+                           substitutions %= mapType n ty
+                           constraints %= mapType n ty
+    freeTypeVars state = freeTypeVars (view bindings state) `Set.union` freeTypeVars (view substitutions state) `Set.union` freeTypeVars (view constraints state)
 
 elimTyp :: (Monad m) => Int -> GammaType a -> TypT a m (GammaType a)
 elimTyp n ty = do
   modify (mapType n ty)
-  modify (\s -> s { substitutions = Map.insert n ty (substitutions s) })
+  substitutions %= Map.insert n ty
   return ty
 
 constrainTyp :: (Monad m) => a -> GammaSym -> [GammaType a] -> TypT a m ()
-constrainTyp a name tys = modify (\s -> s { constraints = (a, name, tys) : constraints s })
+constrainTyp a name tys = constraints %= ((a, name, tys) :)
 
 class (Traversable (t a)) => GammaTypeable t a where
     typecheck :: (Monad m) => t a (a, Int) -> TypT a m (GammaType a)
@@ -146,19 +144,19 @@ unify ty1 ty2 = throwError (CannotUnify ty1 ty2)
 
 generalize :: (Monad m) => TypT a m (GammaType a) -> TypT a m (GammaType a)
 generalize m = do
-  oldc <- gets constraints
-  modify (\s -> s { constraints = [] })
+  oldc <- use constraints
+  constraints .= []
   
   ty <- m
-  cs <- gets constraints
+  cs <- use constraints
   env <- gets freeTypeVars
   let abs = Set.difference (freeTypeVars ty) env
   
-  modify (\s -> s { constraints = oldc })
+  constraints .= oldc
   return (foldl abstract (foldl constrain ty cs) abs)
 
     where abstract t n
-              | Set.member n (freeTypeVars t) = UnivType (gammaAnn t) (\v -> replace n v t)
+              | Set.member n (freeTypeVars t) = UnivType (t ^. annotation) (\v -> replace n v t)
               | otherwise = t
           
           replace n v (FunType a fun args) = FunType a (replace n v fun) (fmap (replace n v) args)
@@ -214,7 +212,7 @@ inferTypes :: (Monad m, GammaTypeable t a) => t a a -> TypT a m (t a (a, GammaTy
 inferTypes code = do
     annotated <- (traverse (\a -> (a,) <$> createVar') code)
     typecheck annotated
-    subst <- gets substitutions
+    subst <- use substitutions
     let final = traverse (\(a, i) -> (a,) <$> Map.lookup i subst) annotated
     case final of
       Just f -> return f

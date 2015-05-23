@@ -3,7 +3,8 @@
 module Main where
 
 import Control.Applicative
-import Text.PrettyPrint.ANSI.Leijen
+import Control.Lens
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Text.Trifecta
 import Language.Gamma
 import Language.Gamma.Parser.Commented
@@ -27,4 +28,4 @@ run src = do
             putStrLn ("AST: " ++ show stmt)
             case (runTyp builtinBindings (inferTypes stmt)) of
               Left tyErr -> putStrLn ("Type Error: " ++ show tyErr)
-              Right ty -> putStr "Typed: " >> print ty
+              Right ty -> putStr "Type: " >> print (pretty (ty ^. annotation._2)) >> print ty

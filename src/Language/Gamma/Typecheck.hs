@@ -113,16 +113,20 @@ instantiate :: GammaType a -> GammaType a -> GammaType a
 instantiate templ v = go 0 templ
     where go n (FunType a x ys) = FunType a (go n x) (fmap (go n) ys)
           go n (UnivType a x) = UnivType a (go (n + 1) x)
+          go n (ConstrainedType a b xs y) = ConstrainedType a b (fmap (go n) xs) (go n y)
           go n t@(BoundType a m) | n == m    = v
                                  | otherwise = t
+          go n t = t
 
 abstract :: GammaType a -> Int -> GammaType a
 abstract templ n | Set.member n (freeTypeVars templ) = UnivType (templ ^. annotation) (go 0 templ)
                  | otherwise = templ
    where go i (FunType a x ys) = FunType a (go i x) (fmap (go i) ys)
          go i (UnivType a x) = UnivType a (go (i + 1) x)
+         go i (ConstrainedType a b xs y) = ConstrainedType a b (fmap (go i) xs) (go i y)
          go i t@(FreeType a m) | n == m    = BoundType a i
                                | otherwise = t
+         go i t = t
 
 unify :: (Monad m) => GammaType a -> GammaType a -> TypT a m (GammaType a)
 unify ty@(FreeType a n) (FreeType b m)
@@ -169,9 +173,9 @@ generalize m = do
 
 instance GammaTypeable GammaDecl a where
     typecheck (VarDecl (a, i) bind expr) =
-        do ety <- generalize $ typecheck expr
+        do ety <- typecheck expr
            bty <- typecheck bind
-           elimTyp i =<< unify bty ety
+           elimTyp i =<< (generalize $ unify bty ety)
     typecheck (FunDecl (a, i) name binds ret stmts) =
         do fty <- generalize $ scoped $ do
                     args <- mapM typecheck binds

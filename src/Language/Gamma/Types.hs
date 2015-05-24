@@ -1,8 +1,9 @@
-{-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable, FlexibleInstances #-}
+{-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable, FlexibleInstances, TemplateHaskell #-}
 
 module Language.Gamma.Types where
 
 import Control.Lens
+import Control.Lens.TH
 
 class GammaAnnotated t where
     annotation :: Lens' (t a) a
@@ -68,3 +69,11 @@ instance GammaAnnotated (GammaExpr t) where
 
 data GammaLit = IntLit Integer
                 deriving (Show)
+
+makePrisms ''GammaDecl
+makePrisms ''GammaBind
+makePrisms ''GammaStmt
+makePrisms ''GammaType
+makePrisms ''GammaPrimType
+makePrisms ''GammaExpr
+makePrisms ''GammaLit

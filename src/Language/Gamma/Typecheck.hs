@@ -71,37 +71,31 @@ bindSym :: (Monad m) => GammaSym -> GammaType a -> TypT a m (GammaType a)
 bindSym name ty = ty <$ (bindings %= Map.insert name ty)
 
 class GammaTypes t a | t -> a where
-    mapType :: Int -> GammaType a -> t -> t
-    freeTypeVars :: t -> Set Int
+    types :: Traversal' t (GammaType a)
+
+mapType :: (GammaTypes t a) => Int -> GammaType a -> t -> t
+mapType n ty orig = orig & types %~ replace
+    where replace t@(FreeType a m) | m == n    = ty
+                                   | otherwise = t
+          replace t = t
+
+freeTypeVars :: (GammaTypes t a) => t -> Set Int
+freeTypeVars ty = ty ^. types._FreeType._2.to Set.singleton
 
 instance GammaTypes (GammaType a) a where
-    mapType n ty (FunType a fun args) = FunType a (mapType n ty fun) (fmap (mapType n ty) args)
-    mapType n ty orig@(FreeType a m) | n == m    = ty
-                                    | otherwise = orig
-    mapType n ty (UnivType a t) = UnivType a (mapType n ty t)
-    mapType n ty (ConstrainedType a name args t) = ConstrainedType a name (fmap (mapType n ty) args) (mapType n ty t)
-    mapType _ _ ty = ty
-    
-    freeTypeVars (FunType a fun args) = foldl Set.union (freeTypeVars fun) (fmap freeTypeVars args)
-    freeTypeVars (FreeType a n) = Set.singleton n
-    freeTypeVars (UnivType a t) = freeTypeVars t
-    freeTypeVars (ConstrainedType a _ args ty) = foldl Set.union (freeTypeVars ty) (fmap freeTypeVars args)
-    freeTypeVars _ = mempty
+    types f (FunType a fun args) = FunType a <$> types f fun <*> traverse (types f) args
+    types f (UnivType a t) = UnivType a <$> types f t
+    types f (ConstrainedType a name args t) = ConstrainedType a name <$> traverse (types f) args <*> types f t
+    types f t = f t
 
 instance GammaTypes (Map k (GammaType a)) a where
-    mapType n ty table = fmap (mapType n ty) table
-    freeTypeVars table = foldl Set.union mempty (fmap freeTypeVars table)
+    types = traverse.types
 
 instance GammaTypes [(a, GammaSym, [GammaType a])] a where
-    mapType n ty cs = [(a, name, [mapType n ty t | t <- tys]) | (a, name, tys) <- cs]
-    freeTypeVars cs = foldl Set.union mempty [freeTypeVars t | (_, _, tys) <- cs, t <- tys]
+    types = traverse._3.traverse.types
 
 instance GammaTypes (TypState a) a where
-    mapType n ty state = state &~ do
-                           bindings %= mapType n ty
-                           substitutions %= mapType n ty
-                           constraints %= mapType n ty
-    freeTypeVars state = freeTypeVars (view bindings state)
+    types f (TypState x bind subst const) = TypState x <$> types f bind <*> types f subst <*> types f const
 
 elimTyp :: (Monad m) => Int -> GammaType a -> TypT a m (GammaType a)
 elimTyp n ty = do
@@ -164,7 +158,7 @@ generalize m = do
   
   ty <- m
   cs <- use constraints
-  env <- gets freeTypeVars
+  env <- uses bindings freeTypeVars
   let abs = Set.difference (freeTypeVars ty) env
   
   constraints .= oldc

@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, TupleSections, TemplateHaskell #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, TupleSections, TemplateHaskell, DeriveDataTypeable, DefaultSignatures #-}
 
 module Language.Gamma.Typecheck where
 
@@ -9,6 +9,8 @@ import Control.Monad.Except
 import Control.Monad.Writer
 import Control.Lens
 import Control.Lens.TH
+import Data.Data
+import Data.Data.Lens
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -23,7 +25,7 @@ declareLenses [d|
       , bindings :: Map GammaSym (GammaType ann)
       , substitutions :: Map Int (GammaType ann)
       , constraints :: [(ann, GammaSym, [GammaType ann])]
-      } deriving (Show)
+      } deriving (Show, Data)
   |]
 
 data TypError a = UnboundSymbol a GammaSym
@@ -70,9 +72,6 @@ lookupSym a name = do
 bindSym :: (Monad m) => GammaSym -> GammaType a -> TypT a m (GammaType a)
 bindSym name ty = ty <$ (bindings %= Map.insert name ty)
 
-class GammaTypes t a | t -> a where
-    types :: Traversal' t (GammaType a)
-
 mapType :: (GammaTypes t a) => Int -> GammaType a -> t -> t
 mapType n ty orig = orig & types %~ replace
     where replace t@(FreeType a m) | m == n    = ty
@@ -82,22 +81,16 @@ mapType n ty orig = orig & types %~ replace
 freeTypeVars :: (GammaTypes t a) => t -> Set Int
 freeTypeVars ty = ty ^. types._FreeType._2.to Set.singleton
 
-instance GammaTypes (GammaType a) a where
-    types f (FunType a fun args) = FunType a <$> types f fun <*> traverse (types f) args
-    types f (UnivType a t) = UnivType a <$> types f t
-    types f (ConstrainedType a name args t) = ConstrainedType a name <$> traverse (types f) args <*> types f t
-    types f t = f t
+class GammaTypes t a | t -> a where
+    types :: Traversal' t (GammaType a)
+    default types :: (Data t, Data a) => Traversal' t (GammaType a)
+    types = template
 
-instance GammaTypes (Map k (GammaType a)) a where
-    types = traverse.types
+instance (Data a) => GammaTypes (GammaType a) a
+instance (Data a) => GammaTypes (Map GammaSym (GammaType a)) a
+instance (Data a) => GammaTypes (TypState a) a
 
-instance GammaTypes [(a, GammaSym, [GammaType a])] a where
-    types = traverse._3.traverse.types
-
-instance GammaTypes (TypState a) a where
-    types f (TypState x bind subst const) = TypState x <$> types f bind <*> types f subst <*> types f const
-
-elimTyp :: (Monad m) => Int -> GammaType a -> TypT a m (GammaType a)
+elimTyp :: (Data a, Monad m) => Int -> GammaType a -> TypT a m (GammaType a)
 elimTyp n ty = do
   modify (mapType n ty)
   substitutions %= Map.insert n ty
@@ -107,7 +100,7 @@ constrainTyp :: (Monad m) => a -> GammaSym -> [GammaType a] -> TypT a m ()
 constrainTyp a name tys = constraints %= ((a, name, tys) :)
 
 class (Traversable (t a)) => GammaTypeable t a where
-    typecheck :: (Monad m) => t a (a, Int) -> TypT a m (GammaType a)
+    typecheck :: (Data a, Monad m) => t a (a, Int) -> TypT a m (GammaType a)
 
 instantiate :: GammaType a -> GammaType a -> GammaType a
 instantiate templ v = go 0 templ
@@ -118,7 +111,7 @@ instantiate templ v = go 0 templ
                                  | otherwise = t
           go n t = t
 
-abstract :: GammaType a -> Int -> GammaType a
+abstract :: (Data a) => GammaType a -> Int -> GammaType a
 abstract templ n | Set.member n (freeTypeVars templ) = UnivType (templ ^. annotation) (go 0 templ)
                  | otherwise = templ
    where go i (FunType a x ys) = FunType a (go i x) (fmap (go i) ys)
@@ -128,7 +121,7 @@ abstract templ n | Set.member n (freeTypeVars templ) = UnivType (templ ^. annota
                                | otherwise = t
          go i t = t
 
-unify :: (Monad m) => GammaType a -> GammaType a -> TypT a m (GammaType a)
+unify :: (Data a, Monad m) => GammaType a -> GammaType a -> TypT a m (GammaType a)
 unify ty@(FreeType a n) (FreeType b m)
     | n == m    = return ty
     | otherwise = elimTyp m ty
@@ -155,7 +148,7 @@ unify ty1@(PrimType _ p1) ty2@(PrimType _ p2) | p1 == p2 = return ty1
                                               | otherwise = throwError (CannotUnify ty1 ty2)
 unify ty1 ty2 = throwError (CannotUnify ty1 ty2)
 
-generalize :: (Monad m) => TypT a m (GammaType a) -> TypT a m (GammaType a)
+generalize :: (Data a, Monad m) => TypT a m (GammaType a) -> TypT a m (GammaType a)
 generalize m = do
   oldc <- use constraints
   constraints .= []
@@ -212,7 +205,7 @@ instance GammaTypeable GammaExpr a where
            FunType _ rty _ <- unify fty (FunType a ret argty)
            elimTyp i rty
 
-inferTypes :: (Monad m, GammaTypeable t a) => t a a -> TypT a m (t a (a, GammaType a))
+inferTypes :: (Data a, Monad m, GammaTypeable t a) => t a a -> TypT a m (t a (a, GammaType a))
 inferTypes code = do
     annotated <- (traverse (\a -> (a,) <$> createVar') code)
     typecheck annotated

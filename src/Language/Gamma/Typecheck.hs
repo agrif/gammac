@@ -13,6 +13,7 @@ import Data.Data
 import Data.Data.Lens
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Maybe
 import Data.Set (Set)
 import qualified Data.Set as Set
 
@@ -72,18 +73,26 @@ bindSym :: (Monad m) => GammaSym -> GammaType a -> TypT a m (GammaType a)
 bindSym name ty = ty <$ (bindings %= Map.insert name ty)
 
 mapType :: (GammaTypes t a) => Int -> GammaType a -> t -> t
-mapType n ty orig = orig & types %~ replace
+mapType n ty orig = orig & typeLeaves %~ replace
     where replace t@(FreeType a m) | m == n    = ty
                                    | otherwise = t
           replace t = t
 
 freeTypeVars :: (GammaTypes t a) => t -> Set Int
-freeTypeVars ty = ty ^. types._FreeType._2.to Set.singleton
+freeTypeVars ty = ty ^. typeLeaves._FreeType._2.to Set.singleton
 
-class GammaTypes t a | t -> a where
+-- a deep traversal of all non-composite types
+typeLeaves :: (GammaTypes t a) => Traversal' t (GammaType a)
+typeLeaves f t = types go t
+    where go ty | isNothing (ty ^? uniplate) = f ty
+                | otherwise                  = uniplate go ty
+
+class (Data a) => GammaTypes t a | t -> a where
+    -- a traversal of immediate type children
+    -- or self for t == GammaType
     types :: Traversal' t (GammaType a)
-    default types :: (Data t, Data a) => Traversal' t (GammaType a)
-    types = template
+    default types :: (Data t) => Traversal' t (GammaType a)
+    types = biplate
 
 instance (Data a) => GammaTypes (GammaType a) a
 instance (Data a) => GammaTypes (Map GammaSym (GammaType a)) a

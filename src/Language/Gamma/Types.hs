@@ -10,7 +10,7 @@ import Data.Data.Lens
 type GammaSym = String
 
 data GammaDecl t a = VarDecl a (GammaBind t a) (GammaExpr t a)
-                   | FunDecl a GammaSym [GammaBind t a] (Maybe (GammaType t)) [GammaStmt t a]
+                   | FunDecl a GammaSym [GammaBind t a] (Maybe (GammaType t)) (GammaExpr t a)
                      deriving (Show, Functor, Foldable, Traversable, Data)
 
 data GammaBind t a = PlainBind a GammaSym
@@ -19,7 +19,6 @@ data GammaBind t a = PlainBind a GammaSym
 
 data GammaStmt t a = DeclStmt a (GammaDecl t a)
                    | ExprStmt a (GammaExpr t a)
-                   | RetStmt a (GammaExpr t a)
                      deriving (Show, Functor, Foldable, Traversable, Data)
 
 data GammaType a = PrimType a GammaPrimType
@@ -31,15 +30,18 @@ data GammaType a = PrimType a GammaPrimType
                    deriving (Show, Functor, Data)
 
 data GammaPrimType = CInt
+                   | Unit
                      deriving (Show, Eq, Data)
 
 data GammaExpr t a = LitExpr a GammaLit
                    | SymExpr a GammaSym
                    | TypeExpr a (GammaExpr t a) (GammaType t)
                    | ApplyExpr a (GammaExpr t a) [GammaExpr t a]
+                   | CompoundExpr a [GammaStmt t a] (GammaExpr t a)
                      deriving (Show, Functor, Foldable, Traversable, Data)
 
 data GammaLit = IntLit Integer
+              | UnitLit
                 deriving (Show, Data)
 
 makePrisms ''GammaDecl

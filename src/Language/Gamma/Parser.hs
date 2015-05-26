@@ -18,30 +18,34 @@ type GammaParser a = Commented GammaStyle Parser a
 instance CommentedStyle (GammaStyle) where
     commentedStyle _ = javaCommentStyle & commentNesting .~ True
 
-ids = emptyIdents & styleReserved .~ HashSet.fromList ["let", "return", "cint"]
+ids = emptyIdents & styleReserved .~ HashSet.fromList ["let", "return", "cint", "()"]
 ops = emptyOps & styleReserved .~ HashSet.fromList ["=", ":"]
 
 pSym = ident ids
 
 pDecl :: GammaParser (GammaDecl () ())
-pDecl =  try (VarDecl () <$> (reserve ids "let" *> pBind) <*> (reserve ops "=" *> pExpr <* symbol ";"))
-     <|> FunDecl () <$> (reserve ids "let" *> pSym) <*> parens (commaSep pBind) <*> option Nothing (Just <$> (reserve ops ":" *> pType)) <*> braces (many pStmt)
+pDecl = (reserve ids "let" *> decltype) <*> (reserve ops "=" *> pExpr <* symbol ";")
+    where decltype =  try (FunDecl () <$> pSym <*> parens (commaSep pBind) <*> option Nothing (Just <$> (reserve ops ":" *> pType)))
+                  <|> VarDecl () <$> pBind
 
 pBind =  TypeBind () <$> try (pSym <* reserve ops ":") <*> pType
      <|> PlainBind () <$> pSym
 
 pStmt =  DeclStmt () <$> pDecl
      <|> ExprStmt () <$> (pExpr <* symbol ";")
-     <|> RetStmt () <$> (reserve ids "return" *> pExpr <* symbol ";")
 
 pType = PrimType () <$> pPrimType
-pPrimType = CInt <$ reserve ids "cint"
+pPrimType =  CInt <$ reserve ids "cint"
+         <|> Unit <$ reserve ids "()"
 
 pExpr =  try (ApplyExpr () <$> pExprAtom <*> parens (commaSep pExpr))
-     <|> try (ApplyExpr () <$> parens pExpr <*> parens (commaSep pExpr))
      <|> pExprAtom
 
 pExprAtom =  LitExpr () <$> pLit
          <|> SymExpr () <$> pSym
+         <|> parens pExpr
+         <|> braces ( CompoundExpr () <$> many (try pStmt) <*> optionalRet)
+    where optionalRet = maybe (LitExpr () UnitLit) id <$> optional pExpr
 
-pLit = IntLit <$> integer'
+pLit =  IntLit <$> integer'
+    <|> UnitLit <$ reserve ids "()"

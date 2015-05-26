@@ -32,7 +32,6 @@ data TypError a = UnboundSymbol a GammaSym
                 | InfiniteType (GammaType a) (GammaType a)
                 | ArgumentCount (GammaType a) (GammaType a)
                 | CannotUnify (GammaType a) (GammaType a)
-                | DoesNotReturn a GammaSym
                 | BrokenCompiler
                   deriving (Show)
 
@@ -169,16 +168,13 @@ instance GammaTypeable GammaDecl a where
         do ety <- typecheck expr
            bty <- typecheck bind
            elimTyp i =<< (generalize $ unify bty ety)
-    typecheck (FunDecl (a, i) name binds ret stmts) =
+    typecheck (FunDecl (a, i) name binds ret expr) =
         do fty <- generalize $ scoped $ do
                     args <- mapM typecheck binds
                     rty <- maybe (createVar a) return ret
                     bindSym name (FunType a rty args)
-                    forM_ stmts $ \stmt -> do
-                        ty <- typecheck stmt
-                        case stmt of
-                          (RetStmt _ _) -> unify rty ty
-                          _ -> return ty
+                    ety <- typecheck expr
+                    unify rty ety
                     lookupSym a name
            
            elimTyp i =<< bindSym name fty
@@ -190,10 +186,11 @@ instance GammaTypeable GammaBind a where
 instance GammaTypeable GammaStmt a where
     typecheck (DeclStmt (a, i) decl) = typecheck decl >>= elimTyp i
     typecheck (ExprStmt (a, i) expr) = typecheck expr >>= elimTyp i
-    typecheck (RetStmt (a, i) expr) = typecheck expr >>= elimTyp i
 
 instance GammaTypeable GammaExpr a where
     typecheck (LitExpr (a, i) (IntLit _)) = elimTyp i (PrimType a CInt)
+    typecheck (LitExpr (a, i) UnitLit) = elimTyp i (PrimType a Unit)
+    
     typecheck (SymExpr (a, i) sym) = lookupSym a sym >>= elimTyp i
     typecheck (TypeExpr (a, i) expr ty) =
         do ity <- typecheck expr
@@ -204,6 +201,9 @@ instance GammaTypeable GammaExpr a where
            argty <- mapM typecheck args
            FunType _ rty _ <- unify fty (FunType a ret argty)
            elimTyp i rty
+    typecheck (CompoundExpr (a, i) stmts expr) =
+        do mapM_ typecheck stmts
+           typecheck expr >>= elimTyp i
 
 inferTypes :: (Data a, Monad m, GammaTypeable t a) => t a a -> TypT a m (t a (a, GammaType a))
 inferTypes code = do

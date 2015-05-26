@@ -15,10 +15,9 @@ commaSep' xs = sep (punctuate comma xs)
 
 instance Pretty (GammaDecl a b) where
     pretty (VarDecl _ bind expr) = "let " <> pretty bind <> " = " <> pretty expr <> ";"
-    pretty (FunDecl _ name args ret stmts) = "let " <> text name <> parens (commaSep args) <> retdoc ret <+> lbrace <$> indent 4 body <$> rbrace
+    pretty (FunDecl _ name args ret expr) = "let " <> text name <> parens (commaSep args) <> retdoc ret <+> "=" <+> pretty expr <> ";"
         where retdoc Nothing = mempty
               retdoc (Just ty) = " : " <> pretty ty
-              body = hcat (fmap pretty stmts)
 
 instance Pretty (GammaBind a b) where
     pretty (PlainBind _ sym) = text sym
@@ -27,7 +26,6 @@ instance Pretty (GammaBind a b) where
 instance Pretty (GammaStmt a b) where
     pretty (DeclStmt _ decl) = pretty decl
     pretty (ExprStmt _ expr) = pretty expr <> ";"
-    pretty (RetStmt _ expr) = "return " <> pretty expr <> ";"
 
 instance Pretty (GammaType a) where
     pretty ty = go [] ty
@@ -44,12 +42,18 @@ instance Pretty (GammaType a) where
 
 instance Pretty GammaPrimType where
     pretty CInt = "cint"
+    pretty Unit = "()"
 
 instance Pretty (GammaExpr a b) where
     pretty (LitExpr _ lit) = pretty lit
     pretty (SymExpr _ sym) = text sym
     pretty (TypeExpr _ expr ty) = pretty expr <> " : " <> pretty ty
     pretty (ApplyExpr _ name args) = pretty name <> parens (commaSep args)
+    pretty (CompoundExpr _ stmts ret) = lbrace <$> indent 4 body <$> rbrace
+        where body = hcat (fmap pretty stmts) <$> retpart ret
+              retpart (LitExpr _ UnitLit) = ""
+              retpart x = pretty x
 
 instance Pretty GammaLit where
     pretty (IntLit i) = integer i
+    pretty UnitLit = "()"
